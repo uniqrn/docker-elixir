@@ -1,35 +1,43 @@
-FROM uniqrn/alpine:v3.10
+FROM debian:buster-20190910-slim
 LABEL maintainer "unicorn research Ltd"
 
 # derived from
-# https://github.com/erlang/docker-erlang-otp/blob/b8d78341fa655cfcd25c1fa37d7d280a07a17517/22/alpine/Dockerfile
-ENV OTP_VERSION="22.1.1" \
-    REBAR3_VERSION="3.12.0"
+# https://github.com/erlang/docker-erlang-otp/blob/b5f9e48145117d414c1475216a3e0e3bc550c664/22/slim/Dockerfile
+
+ENV OTP_VERSION="22.1.3"
 
 LABEL org.opencontainers.image.version=$OTP_VERSION
 
+# We'll install the build dependencies, and purge them on the last step to make
+# sure our final image contains only what we've just built:
 RUN set -xe \
 	&& OTP_DOWNLOAD_URL="https://github.com/erlang/otp/archive/OTP-${OTP_VERSION}.tar.gz" \
-	&& OTP_DOWNLOAD_SHA256="9e7e8565a324101ea31fe5f59b8e46f7dabe9b75df9614d24c3abd05885f1773" \
-	&& REBAR3_DOWNLOAD_SHA256="8ac45498f03e293bc6342ec431888f9a81a4fb9e1177a69965238d127c00a79e" \
-	&& apk add --no-cache --virtual .fetch-deps \
+	&& OTP_DOWNLOAD_SHA256="53a828c1199a41cb54bd3bc6c2c49af977a8834e702c030a5ea34013a3fcacdd" \
+	&& fetchDeps=' \
 		curl \
-		ca-certificates \
+		ca-certificates' \
+	&& apt-get update \
+	&& apt-get install -y --no-install-recommends $fetchDeps \
 	&& curl -fSL -o otp-src.tar.gz "$OTP_DOWNLOAD_URL" \
 	&& echo "$OTP_DOWNLOAD_SHA256  otp-src.tar.gz" | sha256sum -c - \
-	&& apk add --no-cache --virtual .build-deps \
-		dpkg-dev dpkg \
+	&& runtimeDeps=' \
+		libodbc1 \
+		libssl1.1 \
+		libsctp1 \
+	' \
+	&& buildDeps=' \
+		autoconf \
+		dpkg-dev \
 		gcc \
 		g++ \
-		libc-dev \
-		linux-headers \
 		make \
-		autoconf \
-		ncurses-dev \
-		openssl-dev \
+		libncurses-dev \
 		unixodbc-dev \
-		lksctp-tools-dev \
-		tar \
+		libssl-dev \
+		libsctp-dev \
+	' \
+	&& apt-get install -y --no-install-recommends $runtimeDeps \
+	&& apt-get install -y --no-install-recommends $buildDeps \
 	&& export ERL_TOP="/usr/src/otp_src_${OTP_VERSION%%@*}" \
 	&& mkdir -vp $ERL_TOP \
 	&& tar -xzf otp-src.tar.gz -C $ERL_TOP --strip-components=1 \
@@ -38,34 +46,10 @@ RUN set -xe \
 	  && ./otp_build autoconf \
 	  && gnuArch="$(dpkg-architecture --query DEB_BUILD_GNU_TYPE)" \
 	  && ./configure --build="$gnuArch" \
-	  && make -j$(getconf _NPROCESSORS_ONLN) \
+	  && make -j$(nproc) \
 	  && make install ) \
-	&& rm -rf $ERL_TOP \
-	&& find /usr/local -regex '/usr/local/lib/erlang/\(lib/\|erts-\).*/\(man\|doc\|obj\|c_src\|emacs\|info\|examples\)' | xargs rm -rf \
-	&& find /usr/local -name src | xargs -r find | grep -v '\.hrl$' | xargs rm -v || true \
-	&& find /usr/local -name src | xargs -r find | xargs rmdir -vp || true \
-	&& scanelf --nobanner -E ET_EXEC -BF '%F' --recursive /usr/local | xargs -r strip --strip-all \
-	&& scanelf --nobanner -E ET_DYN -BF '%F' --recursive /usr/local | xargs -r strip --strip-unneeded \
-	&& runDeps="$( \
-		scanelf --needed --nobanner --format '%n#p' --recursive /usr/local \
-			| tr ',' '\n' \
-			| sort -u \
-			| awk 'system("[ -e /usr/local/lib/" $1 " ]") == 0 { next } { print "so:" $1 }' \
-	)" \
-	&& REBAR3_DOWNLOAD_URL="https://github.com/erlang/rebar3/archive/${REBAR3_VERSION}.tar.gz" \
-	&& curl -fSL -o rebar3-src.tar.gz "$REBAR3_DOWNLOAD_URL" \
-	&& echo "${REBAR3_DOWNLOAD_SHA256}  rebar3-src.tar.gz" | sha256sum -c - \
-	&& mkdir -p /usr/src/rebar3-src \
-	&& tar -xzf rebar3-src.tar.gz -C /usr/src/rebar3-src --strip-components=1 \
-	&& rm rebar3-src.tar.gz \
-	&& cd /usr/src/rebar3-src \
-	&& HOME=$PWD ./bootstrap \
-	&& install -v ./rebar3 /usr/local/bin/ \
-	&& rm -rf /usr/src/rebar3-src \
-	&& apk add --virtual .erlang-rundeps \
-		$runDeps \
-		lksctp-tools \
-		ca-certificates \
-	&& apk del .fetch-deps .build-deps
+	&& find /usr/local -name examples | xargs rm -rf \
+	&& apt-get purge -y --auto-remove $buildDeps $fetchDeps \
+	&& rm -rf $ERL_TOP /var/lib/apt/lists/*
 
 CMD ["erl"]
